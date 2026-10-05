@@ -6,3 +6,4 @@ dist/
 *.tsbuildinfo
 .idea/
 .vscode/
+scripts/.verify-tour.mjs

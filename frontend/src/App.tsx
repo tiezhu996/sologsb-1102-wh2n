@@ -5,6 +5,7 @@ import {
   AppstoreOutlined,
   DashboardOutlined,
   ReadOutlined,
+  SafetyCertificateOutlined,
   SoundOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -17,6 +18,7 @@ const { Header, Sider, Content, Footer } = Layout;
 
 /** 侧边导航：按当前路径高亮，场次/角色/锣鼓点页复用当前剧目上下文 */
 function buildSelectedKey(pathname: string, currentPlayId: string | null): string {
+  if (pathname.startsWith('/tour')) return ROUTES.tour;
   if (pathname.startsWith('/operators')) return ROUTES.operators;
   if (pathname.startsWith('/plays/') && currentPlayId) return ROUTES.scenes(currentPlayId);
   return ROUTES.plays;
@@ -86,6 +88,7 @@ export default function App() {
                 disabled: !currentPlayId,
               },
               { key: ROUTES.operators, icon: <TeamOutlined />, label: '操耍人档' },
+              { key: ROUTES.tour, icon: <SafetyCertificateOutlined />, label: '巡演授权对账' },
             ]}
           />
           <div style={{ padding: '12px 16px', color: 'rgba(242,223,184,0.6)', fontSize: 12 }}>
@@ -98,6 +101,9 @@ export default function App() {
               </span>
               <span>
                 <SoundOutlined /> 锣鼓点 {counts.cues ?? 0}
+              </span>
+              <span>
+                <SafetyCertificateOutlined /> 授权 {counts.authorizations ?? 0} · 巡演批次 {counts.tourBatches ?? 0}
               </span>
             </Space>
           </div>

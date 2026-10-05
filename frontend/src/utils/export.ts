@@ -7,6 +7,7 @@ import type { Scene } from '../types/scene';
 import type { ShadowRole } from '../types/role';
 import type { Operator } from '../types/operator';
 import type { PercussionCue } from '../types/cue';
+import type { TourAuthorization, TourBatch, TourShow } from '../types/tour';
 import { secondsToTimecode } from './timecode';
 import { BEAT_NAME_LABEL, INSTRUMENT_LABEL } from '../types/cue';
 import { ROLE_TYPE_LABEL, PROP_PART_LABEL } from '../types/role';
@@ -43,6 +44,9 @@ export interface ExportBundle {
   roles: ShadowRole[];
   operators: Operator[];
   cues: PercussionCue[];
+  authorizations: TourAuthorization[];
+  tourBatches: TourBatch[];
+  tourShows: TourShow[];
 }
 
 /** 导出整库 JSON 存档 */

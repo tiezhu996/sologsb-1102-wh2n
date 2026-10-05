@@ -1,8 +1,10 @@
 /**
  * 首次打开应用时灌入的示例班社数据
  * 只在 plays 表为空时执行，保证界面第一次进入就有可点通的内容。
+ * 含巡演授权对账示例：旧版授权与已演冻结、两队合计超额、失败待恢复批次、缺授权待补。
  */
-import { db, ROW_REVISION, type CueRow, type OperatorRow, type PlayRow, type RoleRow, type SceneRow } from './db';
+import { db, ROW_REVISION, type AuthRow, type CueRow, type OperatorRow, type PlayRow, type RoleRow, type SceneRow, type TourBatchRow, type TourShowRow } from './db';
+import type { ScheduleRowPayload } from '../types/tour';
 import { uuid, nowIso } from './uuid';
 
 interface SeedSceneSpec {
@@ -287,6 +289,9 @@ export async function seedDatabase(): Promise<void> {
   const sceneRows: SceneRow[] = [];
   const roleRows: RoleRow[] = [];
   const cueRows: CueRow[] = [];
+  const authRows: AuthRow[] = [];
+  const tourBatchRows: TourBatchRow[] = [];
+  const tourShowRows: TourShowRow[] = [];
 
   PLAYS.forEach((playSpec) => {
     const playId = uuid();
@@ -356,11 +361,318 @@ export async function seedDatabase(): Promise<void> {
     });
   });
 
-  await db.transaction('rw', db.plays, db.scenes, db.roles, db.operators, db.cues, async () => {
+  /* ----------------------- 巡演授权对账示例 ----------------------- */
+  const playIdByTitle = new Map(playRows.map((row) => [row.title, row.id]));
+  const snakeId = playIdByTitle.get('白蛇传·借伞');
+  const monkeyId = playIdByTitle.get('大闹天宫·借扇');
+  if (!snakeId || !monkeyId) {
+    throw new Error('示例剧目缺失，巡演种子数据无法建立');
+  }
+
+  /** 排场次队列构造：导入全部完成时的快照 */
+  const doneScheduleQueue = (rows: ScheduleRowPayload[], fileName: string): TourBatchRow['scheduleQueue'] => ({
+    state: 'done',
+    total: rows.length,
+    processed: rows.length,
+    pending: [],
+    lastError: null,
+    errorOffset: null,
+    sourceFileName: fileName,
+    updatedAt: stamp,
+  });
+
+  const doneReceiptQueue = (rows: Array<{ receiptNo: string; region: string; showDate: string }>, fileName: string): TourBatchRow['receiptQueue'] => ({
+    state: 'done',
+    total: rows.length,
+    processed: rows.length,
+    pending: [],
+    lastError: null,
+    errorOffset: null,
+    sourceFileName: fileName,
+    updatedAt: stamp,
+  });
+
+  let showSeq = 0;
+  const makeShow = (
+    spec: {
+      batchId: string;
+      playId: string;
+      troupe: TourShowRow['troupe'];
+      region: string;
+      showDate: string;
+      status: TourShowRow['status'];
+      authId: string | null;
+      basis?: TourShowRow['basis'];
+      receiptNo?: string | null;
+      issues?: TourShowRow['issues'];
+    },
+  ): TourShowRow => {
+    showSeq += 1;
+    return {
+      id: uuid(),
+      batchId: spec.batchId,
+      playId: spec.playId,
+      troupe: spec.troupe,
+      seq: showSeq,
+      region: spec.region,
+      showDate: spec.showDate,
+      status: spec.status,
+      authId: spec.authId,
+      basis: spec.basis ?? null,
+      receiptNo: spec.receiptNo ?? null,
+      issues: spec.issues ?? [],
+      createdAt: stamp,
+      updatedAt: stamp,
+      revision: ROW_REVISION,
+    };
+  };
+
+  // 《白蛇传·借伞》授权书：v1 春季档已作废，已演场次冻结其依据；v2 秋冬档现行有效
+  const snakeAuthV1Id = uuid();
+  const snakeAuthV2Id = uuid();
+  authRows.push({
+    id: snakeAuthV1Id,
+    playId: snakeId,
+    docNo: '滦文演准〔2026〕第 018 号',
+    versionNo: 1,
+    status: 'superseded',
+    regions: ['唐山市', '秦皇岛市'],
+    dateFrom: '2026-04-01',
+    dateTo: '2026-07-31',
+    totalQuota: 4,
+    issuedAt: '2026-03-20',
+    note: '春季档授权，8 月已换发秋冬档，旧版留存备查。',
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+  authRows.push({
+    id: snakeAuthV2Id,
+    playId: snakeId,
+    docNo: '滦文演准〔2026〕第 106 号',
+    versionNo: 2,
+    status: 'active',
+    regions: ['唐山市', '秦皇岛市', '天津市'],
+    dateFrom: '2026-09-01',
+    dateTo: '2026-12-31',
+    totalQuota: 6,
+    issuedAt: '2026-08-25',
+    note: '秋冬巡演档，天津为新增地区；两队共用一池 6 场额度。',
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+
+  const v1Basis: TourShowRow['basis'] = {
+    authId: snakeAuthV1Id,
+    docNo: '滦文演准〔2026〕第 018 号',
+    versionNo: 1,
+    regions: ['唐山市', '秦皇岛市'],
+    dateFrom: '2026-04-01',
+    dateTo: '2026-07-31',
+    totalQuota: 4,
+  };
+
+  const v2Basis: TourShowRow['basis'] = {
+    authId: snakeAuthV2Id,
+    docNo: '滦文演准〔2026〕第 106 号',
+    versionNo: 2,
+    regions: ['唐山市', '秦皇岛市', '天津市'],
+    dateFrom: '2026-09-01',
+    dateTo: '2026-12-31',
+    totalQuota: 6,
+  };
+
+  // 批次 A：头队春季旧档，回执已导入——已演场次全部冻结在 v1 旧版上
+  const batchAId = uuid();
+  tourBatchRows.push({
+    id: batchAId,
+    batchNo: 'B2026-051',
+    troupe: 'first',
+    playId: snakeId,
+    playTitle: '白蛇传·借伞',
+    note: '春季档旧批次，按旧授权书执行完毕，保留原依据。',
+    status: 'closed',
+    scheduleQueue: doneScheduleQueue(
+      [
+        { region: '唐山市', showDate: '2026-05-16' },
+        { region: '秦皇岛市', showDate: '2026-05-18' },
+      ],
+      'B2026-051-排场次.json',
+    ),
+    receiptQueue: doneReceiptQueue(
+      [
+        { receiptNo: 'HZ-2026-0516-01', region: '唐山市', showDate: '2026-05-16' },
+        { receiptNo: 'HZ-2026-0518-01', region: '秦皇岛市', showDate: '2026-05-18' },
+      ],
+      'B2026-051-演出回执.json',
+    ),
+    receiptLog: [
+      {
+        receiptNo: 'HZ-2026-0516-01',
+        region: '唐山市',
+        showDate: '2026-05-16',
+        result: 'applied',
+        showId: null,
+        at: stamp,
+      },
+      {
+        receiptNo: 'HZ-2026-0518-01',
+        region: '秦皇岛市',
+        showDate: '2026-05-18',
+        result: 'applied',
+        showId: null,
+        at: stamp,
+      },
+    ],
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+  tourShowRows.push(
+    makeShow({ batchId: batchAId, playId: snakeId, troupe: 'first', region: '唐山市', showDate: '2026-05-16', status: 'performed', authId: snakeAuthV1Id, basis: v1Basis, receiptNo: 'HZ-2026-0516-01' }),
+    makeShow({ batchId: batchAId, playId: snakeId, troupe: 'first', region: '秦皇岛市', showDate: '2026-05-18', status: 'performed', authId: snakeAuthV1Id, basis: v1Basis, receiptNo: 'HZ-2026-0518-01' }),
+  );
+
+  // 批次 B：二队秋冬档，排场次导入到第 3 行（地区缺失）整批回滚，重开可继续
+  const batchBId = uuid();
+  const batchBPending: ScheduleRowPayload[] = [
+    { region: '唐山市', showDate: '2026-10-06' },
+    { region: '天津市', showDate: '2026-10-20' },
+    { region: '', showDate: '2026-11-03' },
+    { region: '北京市', showDate: '2026-11-17' },
+  ];
+  tourBatchRows.push({
+    id: batchBId,
+    batchNo: 'B2026-102',
+    troupe: 'second',
+    playId: snakeId,
+    playTitle: '白蛇传·借伞',
+    note: '导入中断示例：恢复原额度后保留待核对批次，可丢弃坏行后继续。',
+    status: 'preparing',
+    scheduleQueue: {
+      state: 'failed',
+      total: 4,
+      processed: 0,
+      pending: batchBPending,
+      lastError: '第 3 行缺少演出地区，无法建档（本批已回滚，预占额度已恢复）',
+      errorOffset: 2,
+      sourceFileName: 'B2026-102-排场次.json',
+      updatedAt: stamp,
+    },
+    receiptQueue: {
+      state: 'idle',
+      total: 0,
+      processed: 0,
+      pending: [],
+      lastError: null,
+      errorOffset: null,
+      sourceFileName: null,
+      updatedAt: null,
+    },
+    receiptLog: [],
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+
+  // 批次 C：头队秋冬档，5 场正常预占、1 场超出授权地区待核对；回执 2 张已转、1 张重复
+  const batchCId = uuid();
+  tourBatchRows.push({
+    id: batchCId,
+    batchNo: 'B2026-101',
+    troupe: 'first',
+    playId: snakeId,
+    playTitle: '白蛇传·借伞',
+    note: '两队合排同剧目：本批先占 5 场额度，二队批次继续排时合计可能超额。',
+    status: 'preparing',
+    scheduleQueue: doneScheduleQueue(
+      [
+        { region: '唐山市', showDate: '2026-10-01' },
+        { region: '唐山市', showDate: '2026-10-02' },
+        { region: '秦皇岛市', showDate: '2026-10-12' },
+        { region: '天津市', showDate: '2026-10-24' },
+        { region: '天津市', showDate: '2026-10-25' },
+        { region: '北京市', showDate: '2026-11-08' },
+      ],
+      'B2026-101-排场次.json',
+    ),
+    receiptQueue: doneReceiptQueue(
+      [
+        { receiptNo: 'HZ-2026-1001-01', region: '唐山市', showDate: '2026-10-01' },
+        { receiptNo: 'HZ-2026-1002-01', region: '唐山市', showDate: '2026-10-02' },
+        { receiptNo: 'HZ-2026-1001-01', region: '唐山市', showDate: '2026-10-01' },
+      ],
+      'B2026-101-演出回执.json',
+    ),
+    receiptLog: [
+      { receiptNo: 'HZ-2026-1001-01', region: '唐山市', showDate: '2026-10-01', result: 'applied', showId: null, at: stamp },
+      { receiptNo: 'HZ-2026-1002-01', region: '唐山市', showDate: '2026-10-02', result: 'applied', showId: null, at: stamp },
+      { receiptNo: 'HZ-2026-1001-01', region: '唐山市', showDate: '2026-10-01', result: 'duplicate', showId: null, at: stamp },
+    ],
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+  const cShows: Array<Omit<Parameters<typeof makeShow>[0], 'batchId' | 'playId' | 'troupe'>> = [
+    { region: '唐山市', showDate: '2026-10-01', status: 'performed', authId: snakeAuthV2Id, basis: v2Basis, receiptNo: 'HZ-2026-1001-01' },
+    { region: '唐山市', showDate: '2026-10-02', status: 'performed', authId: snakeAuthV2Id, basis: v2Basis, receiptNo: 'HZ-2026-1002-01' },
+    { region: '秦皇岛市', showDate: '2026-10-12', status: 'reserved', authId: snakeAuthV2Id },
+    { region: '天津市', showDate: '2026-10-24', status: 'reserved', authId: snakeAuthV2Id },
+    { region: '天津市', showDate: '2026-10-25', status: 'reserved', authId: snakeAuthV2Id },
+    { region: '北京市', showDate: '2026-11-08', status: 'reserved', authId: null, issues: ['REGION_OUT'] },
+  ];
+  cShows.forEach((spec) => {
+    tourShowRows.push(makeShow({ ...spec, batchId: batchCId, playId: snakeId, troupe: 'first' }));
+  });
+
+  // 批次 D：二队《大闹天宫·借扇》——旧剧目缺授权书，全部列入待补
+  const batchDId = uuid();
+  tourBatchRows.push({
+    id: batchDId,
+    batchNo: 'B2026-103',
+    troupe: 'second',
+    playId: monkeyId,
+    playTitle: '大闹天宫·借扇',
+    note: '旧保留剧目，巡演通知已下但授权书尚未补办。',
+    status: 'preparing',
+    scheduleQueue: doneScheduleQueue(
+      [
+        { region: '沧州市', showDate: '2026-11-10' },
+        { region: '廊坊市', showDate: '2026-11-24' },
+      ],
+      'B2026-103-排场次.json',
+    ),
+    receiptQueue: doneReceiptQueue(
+      [
+        // 没有预占额度，回执对不上本地有效场次
+        { receiptNo: 'HZ-2026-1110-07', region: '沧州市', showDate: '2026-11-10' },
+      ],
+      'B2026-103-演出回执.json',
+    ),
+    receiptLog: [
+      { receiptNo: 'HZ-2026-1110-07', region: '沧州市', showDate: '2026-11-10', result: 'unmatched', showId: null, at: stamp },
+    ],
+    createdAt: stamp,
+    updatedAt: stamp,
+    revision: ROW_REVISION,
+  });
+  tourShowRows.push(
+    makeShow({ batchId: batchDId, playId: monkeyId, troupe: 'second', region: '沧州市', showDate: '2026-11-10', status: 'reserved', authId: null, issues: ['NO_AUTH'] }),
+    makeShow({ batchId: batchDId, playId: monkeyId, troupe: 'second', region: '廊坊市', showDate: '2026-11-24', status: 'reserved', authId: null, issues: ['NO_AUTH'] }),
+  );
+
+  await db.transaction(
+    'rw',
+    [db.plays, db.scenes, db.roles, db.operators, db.cues, db.authorizations, db.tourBatches, db.tourShows],
+    async () => {
     await db.operators.bulkPut(operatorRows);
     await db.plays.bulkPut(playRows);
     await db.scenes.bulkPut(sceneRows);
     await db.roles.bulkPut(roleRows);
     await db.cues.bulkPut(cueRows);
+    await db.authorizations.bulkPut(authRows);
+    await db.tourBatches.bulkPut(tourBatchRows);
+    await db.tourShows.bulkPut(tourShowRows);
   });
 }
