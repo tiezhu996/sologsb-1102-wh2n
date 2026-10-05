@@ -6,3 +6,6 @@ dist/
 *.tsbuildinfo
 .idea/
 .vscode/
+
+# 巡演测试打包临时产物
+.tmp-test.mjs

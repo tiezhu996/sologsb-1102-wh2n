@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Badge, Button, Layout, Menu, Space, Tag, Typography, message } from 'antd';
 import {
   AppstoreOutlined,
+  AuditOutlined,
   DashboardOutlined,
   ReadOutlined,
   SoundOutlined,
@@ -11,6 +12,7 @@ import {
 import { ROUTES } from './router';
 import { usePlayStore } from './stores/playStore';
 import { useOperatorStore } from './stores/operatorStore';
+import { useTourStore } from './stores/tourStore';
 import { initDatabase } from './utils/db';
 
 const { Header, Sider, Content, Footer } = Layout;
@@ -18,6 +20,7 @@ const { Header, Sider, Content, Footer } = Layout;
 /** 侧边导航：按当前路径高亮，场次/角色/锣鼓点页复用当前剧目上下文 */
 function buildSelectedKey(pathname: string, currentPlayId: string | null): string {
   if (pathname.startsWith('/operators')) return ROUTES.operators;
+  if (pathname.startsWith('/tour')) return ROUTES.tour;
   if (pathname.startsWith('/plays/') && currentPlayId) return ROUTES.scenes(currentPlayId);
   return ROUTES.plays;
 }
@@ -31,6 +34,10 @@ export default function App() {
   const loadPlays = usePlayStore((state) => state.loadPlays);
   const loadOperators = useOperatorStore((state) => state.loadOperators);
   const operators = useOperatorStore((state) => state.operators);
+  const loadTour = useTourStore((state) => state.loadTour);
+  const pendingImportCount = useTourStore(
+    (state) => state.importBatches.filter((batch) => batch.status !== 'success').length,
+  );
   const [messageApi, contextHolder] = message.useMessage();
 
   useEffect(() => {
@@ -39,7 +46,7 @@ export default function App() {
       try {
         await initDatabase();
         if (cancelled) return;
-        await Promise.all([loadPlays(), loadOperators()]);
+        await Promise.all([loadPlays(), loadOperators(), loadTour()]);
       } catch (error) {
         if (cancelled) return;
         messageApi.error(`本地数据库初始化失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -48,7 +55,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadPlays, loadOperators, messageApi]);
+  }, [loadPlays, loadOperators, loadTour, messageApi]);
 
   const currentPlay = plays.find((play) => play.id === currentPlayId) ?? null;
   const selectedKey = buildSelectedKey(location.pathname, currentPlayId);
@@ -86,6 +93,18 @@ export default function App() {
                 disabled: !currentPlayId,
               },
               { key: ROUTES.operators, icon: <TeamOutlined />, label: '操耍人档' },
+              {
+                key: ROUTES.tour,
+                icon: <AuditOutlined />,
+                label: (
+                  <span>
+                    巡演授权对账
+                    {pendingImportCount > 0 ? (
+                      <Badge count={pendingImportCount} size="small" color="#faad14" offset={[6, -2]} />
+                    ) : null}
+                  </span>
+                ),
+              },
             ]}
           />
           <div style={{ padding: '12px 16px', color: 'rgba(242,223,184,0.6)', fontSize: 12 }}>
